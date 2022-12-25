@@ -1,0 +1,181 @@
+import copy
+import gym
+import random
+import pandas as pd
+import numpy as np
+from gym import spaces
+
+
+MAX_ENERGY = 150
+MIN_ENERGY = 0
+MAX_INCREASE = 25
+MAX_DECREASE = -25
+INITIAL_REQUEST = 15
+MAX_ENERGY_USE = 300
+MAX_STEP = 143
+
+
+class MultiAgentEnv(gym.Env):
+    metadata = {
+        'render.modes' : ['human']
+    }
+
+
+    def __init__(self, renewables_df, datacenter_df):
+        super(MultiAgentEnv, self).__init__()
+
+
+        # Parse dataframes
+        self.renewables = []
+        for i in range(0, len(renewables_df.columns)):
+            self.renewables.append(renewables_df.iloc[:, i].tolist())
+        self.datacenters = []
+        for i in range(0, len(datacenter_df.columns)):
+            self.datacenters.append(datacenter_df.iloc[:, i].tolist())
+
+
+        # Time
+        self.current_step = 0
+
+
+        # Agents
+        self.agents = []
+        for i in range(0, len(self.datacenters)):
+            self.agents.append([])
+            for k in range(0, len(self.renewables)):
+                self.agents[i].append(INITIAL_REQUEST)
+        self.n = len(self.agents)
+
+
+        # Actions
+        low = []
+        high = []
+        for i in range(0, len(self.renewables)):
+            low.append(MAX_DECREASE)
+            high.append(MAX_INCREASE)
+        self.action_space = []
+        for i in range(0, len(self.agents)):
+            self.action_space.append(spaces.Box(np.array(low), np.array(high), dtype=np.int32))
+
+
+        # Observations
+        low = []
+        high = []
+        for i in range(0, len(self.renewables)):
+            low.append(MIN_ENERGY)
+            high.append(MAX_ENERGY)
+
+        low.append(0)
+        high.append(MAX_ENERGY_USE)
+        self.observation_space = []
+        for i in range(0, len(self.agents)):
+            self.observation_space.append(spaces.Box(np.array(low), np.array(high), dtype=np.int32))
+
+
+
+    def calculate_rewards(self, energy_received):
+        # Percentage of energy satisfied ranging 0 - 100 exponentially, minus extra requested percentage
+        rewards = []
+        for i in range(0, len(self.agents)):
+            total_requested = sum(self.agents[i])
+            reward = round(100 * energy_received[i] / self.datacenters[i][self.current_step])
+
+            if reward >= 100:
+                reward = 100
+            else:
+                reward = pow(reward, 1.0472)
+
+            extra = total_requested - self.datacenters[i][self.current_step]
+
+            if extra > 0:
+                reward -= 100 * extra / self.datacenters[i][self.current_step]
+
+            rewards.append(int(reward))
+
+        return rewards
+
+    def get_agent_observations(self):
+        # Get energy generation of current step, then append energy need
+        curr_energy = []
+        for i in range(0, len(self.renewables)):
+            curr_energy.append(self.renewables[i][self.current_step])
+
+        obs = []
+        for i in range(0, len(self.datacenters)):
+            temp = copy.deepcopy(curr_energy)
+            temp.append(self.datacenters[i][self.current_step])
+            obs.append(np.asarray(temp))
+            #obs.append(copy.deepcopy(curr_energy))
+            #obs[i].append(self.datacenters[i][self.current_step])
+
+        return obs
+
+
+
+    def step(self, actions):
+        # Execute one time step within the environment
+        # Update amount requested from each energy source
+        for i in range(0, len(self.datacenters)):
+            for k in range(0, len(actions)):
+                self.agents[i][k] += actions[i][k]
+
+
+        # Increment step and check if end of data
+        self.current_step += 1
+
+        done = False
+        if self.current_step > MAX_STEP:
+            done = True
+
+        done_list = []
+        for i in range(0, len(self.agents)):
+            done_list.append(done)
+
+        # Calculate energy received by each datacenter
+        energy_given = []
+        for i in range(0, len(self.renewables)):
+            energy_given.append([])
+            total_requested = 0
+            for k in range(0, len(self.agents)):
+                total_requested += self.agents[k][i]
+            for k in range(0, len(self.agents)):
+                energy_given[i].append(int(self.agents[k][i] / total_requested * self.renewables[i][self.current_step]))
+
+        self.energy_received = []
+        for i in range(0, len(self.agents)):
+            total_received = 0
+            for k in range(0, len(energy_given)):
+                total_received += energy_given[k][i]
+            self.energy_received.append(total_received)
+
+
+        # Calculate rewards
+        self.rewards = self.calculate_rewards(self.energy_received)
+
+
+        return self.get_agent_observations, self.rewards, done_list, {}
+
+
+
+    def reset(self):
+        # Reset the state of the environment to an initial state
+        self.current_step = random.randint(0, 100)
+
+        for x in self.agents:
+            for i in range(0, len(x)):
+                x[i] = INITIAL_REQUEST
+
+        return self.get_agent_observations()
+
+
+
+    def render(self, mode='human', close=False):
+        # Render the environment to the screen
+        print('Current Step: ', self.current_step)
+        print('Renewables: ', self.renewables[0][self.current_step], self.renewables[1][self.current_step], self.renewables[2][self.current_step], self.renewables[3][self.current_step])
+        print('D1', self.datacenters[0][self.current_step], self.energy_received[0], self.agents[0])
+        print('D2', self.datacenters[1][self.current_step], self.energy_received[1], self.agents[1])
+        print('D3', self.datacenters[2][self.current_step], self.energy_received[2], self.agents[2])
+        print('Rewards: ', self.rewards)
+        print(self.get_agent_observations())
+        print('--------------------------------------------------')
